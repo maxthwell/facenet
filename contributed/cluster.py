@@ -35,7 +35,7 @@ import argparse
 import facenet
 import align.detect_face
 from sklearn.cluster import DBSCAN
-
+import cv2
 
 def main(args):
     pnet, rnet, onet = create_network_face_detection(args.gpu_memory_fraction)
@@ -44,9 +44,8 @@ def main(args):
 
         with tf.Session() as sess:
             facenet.load_model(args.model)
-
             image_list = load_images_from_folder(args.data_dir)
-            images = align_data(image_list, args.image_size, args.margin, pnet, rnet, onet)
+            images, cropped = align_data(image_list, args.image_size, args.margin, pnet, rnet, onet)
 
             images_placeholder = sess.graph.get_tensor_by_name("input:0")
             embeddings = sess.graph.get_tensor_by_name("embeddings:0")
@@ -95,7 +94,7 @@ def main(args):
                     print('Saving largest cluster (Cluster: {})'.format(largest_cluster))
                     cnt = 1
                     for i in np.nonzero(labels == largest_cluster)[0]:
-                        misc.imsave(os.path.join(args.out_dir, str(cnt) + '.png'), images[i])
+                        cv2.imwrite(os.path.join(args.out_dir, str(cnt) + '.png'), cropped[i])
                         cnt += 1
                 else:
                     print('Saving all clusters')
@@ -106,11 +105,11 @@ def main(args):
                         if not os.path.exists(path):
                             os.makedirs(path)
                             for j in np.nonzero(labels == i)[0]:
-                                misc.imsave(os.path.join(path, str(cnt) + '.png'), images[j])
+                                cv2.imwrite(os.path.join(path, str(cnt) + '.png'), cropped[j])
                                 cnt += 1
                         else:
                             for j in np.nonzero(labels == i)[0]:
-                                misc.imsave(os.path.join(path, str(cnt) + '.png'), images[j])
+                                cv2.imwrite(os.path.join(path, str(cnt) + '.png'), cropped[j])
                                 cnt += 1
 
 
@@ -120,13 +119,24 @@ def align_data(image_list, image_size, margin, pnet, rnet, onet):
     factor = 0.709  # scale factor
 
     img_list = []
+    cropped_list = []
 
-    for x in xrange(len(image_list)):
+    for x in range(len(image_list)):
         img_size = np.asarray(image_list[x].shape)[0:2]
-        bounding_boxes, _ = align.detect_face.detect_face(image_list[x], minsize, pnet, rnet, onet, threshold, factor)
+        img = image_list[x]
+        bounding_boxes, key_points = align.detect_face.detect_face(img, minsize, pnet, rnet, onet, threshold, factor)
+        SP = bounding_boxes.shape
+        draw=img.copy()
+        for i in range(SP[0]):
+            b = bounding_boxes[i]
+            cv2.rectangle(draw, (int(b[0]),int(b[1])), (int(b[2]),int(b[3])), (0,255,0), 2)
+        for pt in key_points.transpose().reshape([-1,2,5]):
+            for i in range(5):
+                cv2.circle(draw, (pt[0,i],pt[1,i]), radius=1, color=(0,0,255), thickness=2)
+        cv2.imwrite('rectangle/%s.jpg'%x, draw)        
         nrof_samples = len(bounding_boxes)
         if nrof_samples > 0:
-            for i in xrange(nrof_samples):
+            for i in range(nrof_samples):
                 if bounding_boxes[i][4] > 0.95:
                     det = np.squeeze(bounding_boxes[i, 0:4])
                     bb = np.zeros(4, dtype=np.int32)
@@ -134,14 +144,14 @@ def align_data(image_list, image_size, margin, pnet, rnet, onet):
                     bb[1] = np.maximum(det[1] - margin / 2, 0)
                     bb[2] = np.minimum(det[2] + margin / 2, img_size[1])
                     bb[3] = np.minimum(det[3] + margin / 2, img_size[0])
-                    cropped = image_list[x][bb[1]:bb[3], bb[0]:bb[2], :]
-                    aligned = misc.imresize(cropped, (image_size, image_size), interp='bilinear')
+                    cropped = img[bb[1]:bb[3], bb[0]:bb[2], :]
+                    cropped_list.append(cropped)
+                    aligned = cv2.resize(cropped, dsize=(image_size, image_size))
                     prewhitened = facenet.prewhiten(aligned)
                     img_list.append(prewhitened)
-
     if len(img_list) > 0:
         images = np.stack(img_list)
-        return images
+        return (images,cropped_list)
     else:
         return None
 
@@ -158,7 +168,7 @@ def create_network_face_detection(gpu_memory_fraction):
 def load_images_from_folder(folder):
     images = []
     for filename in os.listdir(folder):
-        img = misc.imread(os.path.join(folder, filename))
+        img = cv2.imread(os.path.join(folder, filename))
         if img is not None:
             images.append(img)
     return images
