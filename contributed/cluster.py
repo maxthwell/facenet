@@ -44,15 +44,33 @@ def main(args):
 
         with tf.Session() as sess:
             facenet.load_model(args.model)
-            image_list = load_images_from_folder(args.data_dir)
-            images, cropped = align_data(image_list, args.image_size, args.margin, pnet, rnet, onet)
+            image_list, imgnames = load_images_from_folder(args.data_dir)
+            images, cropped, name_list = align_data(image_list, imgnames, args.image_size, args.margin, pnet, rnet, onet)
 
             images_placeholder = sess.graph.get_tensor_by_name("input:0")
             embeddings = sess.graph.get_tensor_by_name("embeddings:0")
             phase_train_placeholder = sess.graph.get_tensor_by_name("phase_train:0")
             feed_dict = {images_placeholder: images, phase_train_placeholder: False}
             emb = sess.run(embeddings, feed_dict=feed_dict)
-
+            #计算tsne
+            from sklearn.manifold import TSNE
+            tsne = TSNE(n_components=2)
+            tsne.fit_transform(emb)
+            Y = 5*tsne.embedding_
+            Y -= np.min(Y, axis=0)-100
+            Y *= 800/np.max(Y,axis=0)
+            Y = Y.astype(np.int32)
+            print('-----------tsne:')
+            print(Y)
+            data = np.zeros([1000,1000,3], dtype=np.float32)
+            for i in range(Y.shape[0]):
+                r,c = Y[i]
+                name = name_list[i]
+                cv2.circle(data, (r,c), radius=1, color=(0,0,255), thickness=2)
+                cv2.putText(data,name, (r,c), cv2.FONT_HERSHEY_SIMPLEX, 0.4,color=(255,255,255))
+            cv2.imwrite('tsne.jpg', data) 
+                
+            
             nrof_images = len(images)
 
             matrix = np.zeros((nrof_images, nrof_images))
@@ -65,12 +83,12 @@ def main(args):
                 print('    %1d     ' % i, end='')
             print('')
             for i in range(nrof_images):
-                print('%1d  ' % i, end='')
+                #print('%1d  ' % i, end='')
                 for j in range(nrof_images):
                     dist = np.sqrt(np.sum(np.square(np.subtract(emb[i, :], emb[j, :]))))
                     matrix[i][j] = dist
-                    print('  %1.4f  ' % dist, end='')
-                print('')
+                    #print('  %1.4f  ' % dist, end='')
+                #print('')
 
             print('')
 
@@ -113,17 +131,19 @@ def main(args):
                                 cnt += 1
 
 
-def align_data(image_list, image_size, margin, pnet, rnet, onet):
+def align_data(image_list, imgnames, image_size, margin, pnet, rnet, onet):
     minsize = 20  # minimum size of face
     threshold = [0.6, 0.7, 0.7]  # three steps's threshold
     factor = 0.709  # scale factor
 
     img_list = []
+    name_list = []
     cropped_list = []
 
     for x in range(len(image_list)):
         img_size = np.asarray(image_list[x].shape)[0:2]
         img = image_list[x]
+        name = imgnames[x]
         bounding_boxes, key_points = align.detect_face.detect_face(img, minsize, pnet, rnet, onet, threshold, factor)
         SP = bounding_boxes.shape
         draw=img.copy()
@@ -149,9 +169,10 @@ def align_data(image_list, image_size, margin, pnet, rnet, onet):
                     aligned = cv2.resize(cropped, dsize=(image_size, image_size))
                     prewhitened = facenet.prewhiten(aligned)
                     img_list.append(prewhitened)
+                    name_list.append(name)
     if len(img_list) > 0:
         images = np.stack(img_list)
-        return (images,cropped_list)
+        return (images,cropped_list,name_list)
     else:
         return None
 
@@ -167,11 +188,13 @@ def create_network_face_detection(gpu_memory_fraction):
 
 def load_images_from_folder(folder):
     images = []
+    imgnames = []
     for filename in os.listdir(folder):
         img = cv2.imread(os.path.join(folder, filename))
         if img is not None:
             images.append(img)
-    return images
+            imgnames.append(filename)
+    return images, imgnames
 
 
 def parse_arguments(argv):
